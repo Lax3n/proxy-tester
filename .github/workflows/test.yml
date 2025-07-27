@@ -61,22 +61,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: "macos-13"
-            target: "x86_64-apple-darwin"
-            arch: "x64"
-            os: "macos"
+          # - platform: "macos-13"
+          #   target: "x86_64-apple-darwin"
+          #   arch: "x64"
+          #   os: "macos"
           - platform: "macos-latest"
             target: "aarch64-apple-darwin"
             arch: "aarch64"
             os: "macos"
-          - platform: "windows-latest"
-            target: "x86_64-pc-windows-msvc"
-            arch: "x64"
-            os: "windows"
-          - platform: "ubuntu-22.04"
-            target: "x86_64-unknown-linux-gnu"
-            arch: "amd64"
-            os: "linux"
+          # - platform: "windows-latest"
+          #   target: "x86_64-pc-windows-msvc"
+          #   arch: "x64"
+          #   os: "windows"
+          # - platform: "ubuntu-22.04"
+          #   target: "x86_64-unknown-linux-gnu"
+          #   arch: "amd64"
+          #   os: "linux"
 
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 60
