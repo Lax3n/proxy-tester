@@ -167,8 +167,18 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
         with:
           tagName: ${{ needs.check-version.outputs.version }}
-          releaseName: "${{ needs.check-version.outputs.version }}"
-          releaseBody: ""
+          releaseName: "Vital Proxy Tester v${{ needs.check-version.outputs.version }}"
+          releaseBody: |
+            ## Downloads
+
+            **Desktop Applications:**
+            - **macOS Intel**: [Download](https://github.com/${{ github.repository }}/releases/download/${{ needs.check-version.outputs.version }}/Vital.Proxy.Tester_${{ needs.check-version.outputs.version }}_x64.dmg)
+            - **macOS Apple Silicon**: [Download](https://github.com/${{ github.repository }}/releases/download/${{ needs.check-version.outputs.version }}/Vital.Proxy.Tester_${{ needs.check-version.outputs.version }}_aarch64.dmg)  
+            - **Windows**: [Download](https://github.com/${{ github.repository }}/releases/download/${{ needs.check-version.outputs.version }}/Vital.Proxy.Tester_${{ needs.check-version.outputs.version }}_x64-setup.exe)
+            - **Linux AppImage**: [Download](https://github.com/${{ github.repository }}/releases/download/${{ needs.check-version.outputs.version }}/Vital.Proxy.Tester_${{ needs.check-version.outputs.version }}_amd64.AppImage)
+            - **Linux DEB**: [Download](https://github.com/${{ github.repository }}/releases/download/${{ needs.check-version.outputs.version }}/Vital.Proxy.Tester_${{ needs.check-version.outputs.version }}_amd64.deb)
+
+            Built from commit: ${{ github.sha }}
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
