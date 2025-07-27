@@ -157,37 +157,20 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Apple code signing (macOS only)
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          # Tauri signing (all platforms)
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
-          # Optimization flags
-          CARGO_INCREMENTAL: "1"
-          CARGO_NET_RETRY: "10"
-          RUST_BACKTRACE: "1"
         with:
           tagName: ${{ needs.check-version.outputs.version }}
+          releaseName: "${{ needs.check-version.outputs.version }}"
+          releaseBody: ""
           releaseDraft: true
-          releaseName: "Vital Proxy Tester v${{ needs.check-version.outputs.version }}"
-          releaseBody: |
-            ## Downloads
-
-            **Desktop Applications:**
-            - **macOS Intel**: [Download](https://github.com/${{ github.repository }}/releases/download/${{ needs.check-version.outputs.version }}/Vital.Proxy.Tester_${{ needs.check-version.outputs.version }}_x64.dmg)
-            - **macOS Apple Silicon**: [Download](https://github.com/${{ github.repository }}/releases/download/${{ needs.check-version.outputs.version }}/Vital.Proxy.Tester_${{ needs.check-version.outputs.version }}_aarch64.dmg)  
-            - **Windows**: [Download](https://github.com/${{ github.repository }}/releases/download/${{ needs.check-version.outputs.version }}/Vital.Proxy.Tester_${{ needs.check-version.outputs.version }}_x64-setup.exe)
-            - **Linux AppImage**: [Download](https://github.com/${{ github.repository }}/releases/download/${{ needs.check-version.outputs.version }}/Vital.Proxy.Tester_${{ needs.check-version.outputs.version }}_amd64.AppImage)
-            - **Linux DEB**: [Download](https://github.com/${{ github.repository }}/releases/download/${{ needs.check-version.outputs.version }}/Vital.Proxy.Tester_${{ needs.check-version.outputs.version }}_amd64.deb)
-
-            Built from commit: ${{ github.sha }}
-          includeRelease: false
-          includeUpdaterJson: true
+          prerelease: false
           args: --target ${{ matrix.target }}
 
       - name: Find and Rename Artifacts
