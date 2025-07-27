@@ -1,0 +1,384 @@
+name: "Build and Release"
+
+on:
+  # Only manual triggers and tags
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: "Force build even for test branch"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  # Quick version check job (runs once)
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+      should_build: ${{ steps.check.outputs.should_build }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get App Version
+        id: get_version
+        run: |
+          VERSION=$(jq -r '.version' src-tauri/tauri.conf.json)
+          if [ "$VERSION" = "null" ]; then
+            echo "Error: Could not extract version from tauri.conf.json"
+            exit 1
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Extracted version: $VERSION"
+
+      - name: Check if should build
+        id: check
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          FORCE_BUILD="${{ github.event.inputs.force_build }}"
+
+          echo "Version: $VERSION"
+          echo "Force build: $FORCE_BUILD"
+          echo "Event: ${{ github.event_name }}"
+
+          if [[ "$FORCE_BUILD" == "true" ]]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "Force building version: $VERSION"
+          elif [[ "${{ github.event_name }}" == "push" ]] && [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "Building tagged release: $VERSION"
+          elif [[ "$VERSION" == *"-dev"* ]]; then
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "Skipping dev version: $VERSION (use 'Force build' to override)"
+          else
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "Building stable version: $VERSION"
+          fi
+
+  # Platform-specific builds (run in parallel, heavily cached)
+  publish-tauri:
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: "macos-13"
+            target: "x86_64-apple-darwin"
+            arch: "x64"
+            os: "macos"
+          - platform: "macos-latest"
+            target: "aarch64-apple-darwin"
+            arch: "aarch64"
+            os: "macos"
+          - platform: "windows-latest"
+            target: "x86_64-pc-windows-msvc"
+            arch: "x64"
+            os: "windows"
+          - platform: "ubuntu-22.04"
+            target: "x86_64-unknown-linux-gnu"
+            arch: "amd64"
+            os: "linux"
+
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Cache Node.js dependencies (most important for yarn install speed)
+      - name: Setup Node.js with aggressive caching
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: "yarn"
+          cache-dependency-path: |
+            yarn.lock
+            package.json
+
+      # Cache Rust dependencies (HUGE impact - can save 5-10 minutes)
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('src-tauri/src/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}-
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
+            ${{ runner.os }}-cargo-
+
+      # Install Rust with target (faster than installing target separately)
+      - name: Install Rust stable with target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # Cache system dependencies (Linux only, but saves ~30 seconds)
+      - name: Cache and install system dependencies (Linux)
+        if: matrix.os == 'linux'
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: libwebkit2gtk-4.0-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          version: 1.0
+
+      # Fast dependency install with offline preference
+      - name: Install dependencies (fast)
+        run: yarn install --frozen-lockfile --prefer-offline --network-timeout 30000
+
+      # Build steps (kept separate for better caching granularity)
+      - name: Build Frontend
+        run: yarn build:frontend
+
+      - name: Build Server Source
+        run: yarn build:server
+
+      - name: Package Sidecar for Target
+        run: yarn package:server ${{ matrix.target }}
+
+      # Patch config efficiently
+      - name: Patch Tauri config
+        shell: bash
+        run: |
+          # Detect and patch config based on Tauri version
+          if jq -e '.plugins.updater' src-tauri/tauri.conf.json > /dev/null 2>&1; then
+            # Tauri v2
+            jq '.plugins.updater.endpoints = ["https://github.com/vital-proxies/proxy-tester/releases/latest/download/latest.json"] | .bundle.targets = "all"' \
+              src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+          else
+            # Tauri v1
+            jq '.updater.endpoints = ["https://github.com/vital-proxies/proxy-tester/releases/latest/download/latest.json"] | .bundle.targets = "all"' \
+              src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+          fi
+
+      # The actual build (benefits most from Rust caching)
+      - name: Build Tauri App
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Apple code signing (macOS only)
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          # Tauri signing (all platforms)
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+          # Optimization flags
+          CARGO_INCREMENTAL: "1"
+          CARGO_NET_RETRY: "10"
+          RUST_BACKTRACE: "1"
+        with:
+          # Don't create release here - we'll handle it separately for renaming
+          includeRelease: false
+          includeUpdaterJson: true
+          args: --target ${{ matrix.target }}
+
+      - name: Find and Rename Artifacts
+        shell: bash
+        run: |
+          set -e
+
+          VERSION="${{ needs.check-version.outputs.version }}"
+          ARCH="${{ matrix.arch }}"
+          OS="${{ matrix.os }}"
+
+          echo "Looking for artifacts with version: $VERSION"
+          echo "Target architecture: $ARCH"
+          echo "Target OS: $OS"
+
+          # Find all possible bundle directories
+          BUNDLE_DIRS=$(find src-tauri/target -type d -name "bundle" 2>/dev/null || true)
+
+          if [ -z "$BUNDLE_DIRS" ]; then
+            echo "Warning: No bundle directories found"
+            exit 0
+          fi
+
+          echo "Found bundle directories:"
+          echo "$BUNDLE_DIRS"
+
+          # Create a staging directory for renamed artifacts
+          mkdir -p artifacts-staging
+
+          # Function to safely rename and move files
+          rename_and_stage() {
+            local pattern="$1"
+            local new_name="$2"
+            local found_files
+            
+            found_files=$(find $BUNDLE_DIRS -name "$pattern" 2>/dev/null || true)
+            
+            if [ -n "$found_files" ]; then
+              echo "$found_files" | while IFS= read -r file; do
+                if [ -f "$file" ]; then
+                  echo "Found: $file -> $new_name"
+                  cp "$file" "artifacts-staging/$new_name"
+                fi
+              done
+            else
+              echo "No files found matching pattern: $pattern"
+            fi
+          }
+
+          # Platform-specific renaming to versionless names
+          case "$OS" in
+            "macos")
+              # User-facing downloads (versionless)
+              rename_and_stage "Vital.Proxy.Tester_${VERSION}_${ARCH}.dmg" "Vital.Proxy.Tester_${ARCH}.dmg"
+              # Updater files (versionless for stable URLs)
+              rename_and_stage "Vital.Proxy.Tester_${VERSION}_${ARCH}.app.tar.gz" "Vital.Proxy.Tester_${ARCH}.app.tar.gz"
+              rename_and_stage "Vital.Proxy.Tester_${VERSION}_${ARCH}.app.tar.gz.sig" "Vital.Proxy.Tester_${ARCH}.app.tar.gz.sig"
+              ;;
+            "windows")
+              # User-facing downloads (versionless)
+              rename_and_stage "Vital.Proxy.Tester_${VERSION}_${ARCH}_en-US.msi" "Vital.Proxy.Tester_${ARCH}_en-US.msi"
+              rename_and_stage "Vital.Proxy.Tester_${VERSION}_${ARCH}-setup.exe" "Vital.Proxy.Tester_${ARCH}-setup.exe"
+              # Updater files (versionless)
+              rename_and_stage "Vital.Proxy.Tester_${VERSION}_${ARCH}.msi.zip" "Vital.Proxy.Tester_${ARCH}.msi.zip"
+              rename_and_stage "Vital.Proxy.Tester_${VERSION}_${ARCH}.msi.zip.sig" "Vital.Proxy.Tester_${ARCH}.msi.zip.sig"
+              ;;
+            "linux")
+              # User-facing downloads (versionless)
+              rename_and_stage "Vital.Proxy.Tester_${VERSION}_${ARCH}.deb" "Vital.Proxy.Tester_${ARCH}.deb"
+              rename_and_stage "Vital.Proxy.Tester_${VERSION}_${ARCH}.AppImage" "Vital.Proxy.Tester_${ARCH}.AppImage"
+              rename_and_stage "vital-proxy-tester-${VERSION}-1.${ARCH}.rpm" "Vital.Proxy.Tester_${ARCH}.rpm"
+              # RPM naming can vary, try alternative patterns
+              rename_and_stage "*${VERSION}*.rpm" "Vital.Proxy.Tester_${ARCH}.rpm"
+              # Updater files (versionless)
+              rename_and_stage "Vital.Proxy.Tester_${VERSION}_${ARCH}.AppImage.tar.gz" "Vital.Proxy.Tester_${ARCH}.AppImage.tar.gz"
+              rename_and_stage "Vital.Proxy.Tester_${VERSION}_${ARCH}.AppImage.tar.gz.sig" "Vital.Proxy.Tester_${ARCH}.AppImage.tar.gz.sig"
+              ;;
+          esac
+
+          # List what we've staged
+          echo "Staged artifacts:"
+          ls -la artifacts-staging/ || echo "No artifacts staged"
+
+      - name: Upload Artifacts for Release
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts-${{ matrix.os }}-${{ matrix.arch }}
+          path: artifacts-staging/*
+          if-no-files-found: warn
+          retention-days: 7
+
+  # Create unified release with all renamed artifacts
+  create-release:
+    needs: [check-version, publish-tauri]
+    if: needs.check-version.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: build-artifacts-*
+          path: all-artifacts
+          merge-multiple: true
+
+      - name: List Downloaded Artifacts
+        run: |
+          echo "All downloaded artifacts:"
+          find all-artifacts -type f -exec ls -la {} \;
+
+      - name: Generate Updater JSON
+        shell: bash
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          REPO="${{ github.repository }}"
+
+          # Create the updater manifest with versionless URLs
+          cat > all-artifacts/latest.json << EOF
+          {
+            "version": "$VERSION",
+            "notes": "See full release notes at https://github.com/$REPO/releases/tag/$VERSION",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "darwin-x86_64": {
+                "signature": "",
+                "url": "https://github.com/$REPO/releases/latest/download/Vital.Proxy.Tester_x64.app.tar.gz"
+              },
+              "darwin-aarch64": {
+                "signature": "",
+                "url": "https://github.com/$REPO/releases/latest/download/Vital.Proxy.Tester_aarch64.app.tar.gz"
+              },
+              "linux-x86_64": {
+                "signature": "",
+                "url": "https://github.com/$REPO/releases/latest/download/Vital.Proxy.Tester_amd64.AppImage.tar.gz"
+              },
+              "windows-x86_64": {
+                "signature": "",
+                "url": "https://github.com/$REPO/releases/latest/download/Vital.Proxy.Tester_x64.msi.zip"
+              }
+            }
+          }
+          EOF
+
+          # Add signatures if available
+          if [ -f "all-artifacts/Vital.Proxy.Tester_x64.app.tar.gz.sig" ]; then
+            DARWIN_X64_SIG=$(cat "all-artifacts/Vital.Proxy.Tester_x64.app.tar.gz.sig")
+            jq --arg sig "$DARWIN_X64_SIG" '.platforms."darwin-x86_64".signature = $sig' all-artifacts/latest.json > temp.json && mv temp.json all-artifacts/latest.json
+          fi
+
+          if [ -f "all-artifacts/Vital.Proxy.Tester_aarch64.app.tar.gz.sig" ]; then
+            DARWIN_ARM_SIG=$(cat "all-artifacts/Vital.Proxy.Tester_aarch64.app.tar.gz.sig")
+            jq --arg sig "$DARWIN_ARM_SIG" '.platforms."darwin-aarch64".signature = $sig' all-artifacts/latest.json > temp.json && mv temp.json all-artifacts/latest.json
+          fi
+
+          if [ -f "all-artifacts/Vital.Proxy.Tester_amd64.AppImage.tar.gz.sig" ]; then
+            LINUX_SIG=$(cat "all-artifacts/Vital.Proxy.Tester_amd64.AppImage.tar.gz.sig")
+            jq --arg sig "$LINUX_SIG" '.platforms."linux-x86_64".signature = $sig' all-artifacts/latest.json > temp.json && mv temp.json all-artifacts/latest.json
+          fi
+
+          if [ -f "all-artifacts/Vital.Proxy.Tester_x64.msi.zip.sig" ]; then
+            WINDOWS_SIG=$(cat "all-artifacts/Vital.Proxy.Tester_x64.msi.zip.sig")
+            jq --arg sig "$WINDOWS_SIG" '.platforms."windows-x86_64".signature = $sig' all-artifacts/latest.json > temp.json && mv temp.json all-artifacts/latest.json
+          fi
+
+          echo "Generated updater manifest:"
+          cat all-artifacts/latest.json
+
+      - name: Create Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+
+          # Determine if this should be a prerelease
+          PRERELEASE_FLAG=""
+          if [[ "$VERSION" == *"alpha"* ]] || [[ "$VERSION" == *"beta"* ]] || [[ "$VERSION" == *"rc"* ]]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+
+          # Create the release with stable download URLs
+          gh release create "$VERSION" \
+            --repo ${{ github.repository }} \
+            --title "Vital Proxy Tester v$VERSION" \
+            --notes "## Downloads (Always Latest URLs)
+
+          **Desktop Applications:**
+          - **macOS Intel**: [Vital.Proxy.Tester_x64.dmg](https://github.com/${{ github.repository }}/releases/latest/download/Vital.Proxy.Tester_x64.dmg)
+          - **macOS Apple Silicon**: [Vital.Proxy.Tester_aarch64.dmg](https://github.com/${{ github.repository }}/releases/latest/download/Vital.Proxy.Tester_aarch64.dmg)  
+          - **Windows**: [Vital.Proxy.Tester_x64-setup.exe](https://github.com/${{ github.repository }}/releases/latest/download/Vital.Proxy.Tester_x64-setup.exe)
+          - **Linux AppImage**: [Vital.Proxy.Tester_amd64.AppImage](https://github.com/${{ github.repository }}/releases/latest/download/Vital.Proxy.Tester_amd64.AppImage)
+          - **Linux DEB**: [Vital.Proxy.Tester_amd64.deb](https://github.com/${{ github.repository }}/releases/latest/download/Vital.Proxy.Tester_amd64.deb)
+          - **Linux RPM**: [Vital.Proxy.Tester_amd64.rpm](https://github.com/${{ github.repository }}/releases/latest/download/Vital.Proxy.Tester_amd64.rpm)
+
+          **Auto-updater endpoint**: \`https://github.com/${{ github.repository }}/releases/latest/download/latest.json\`
+
+          These URLs always point to the latest release - perfect for embedding in documentation!
+
+          Built from commit: ${{ github.sha }}" \
+            $PRERELEASE_FLAG \
+            all-artifacts/*
