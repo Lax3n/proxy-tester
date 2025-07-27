@@ -2,6 +2,9 @@ name: "Test Branch"
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - test
 
 jobs:
   # Quick version check job (runs once)
