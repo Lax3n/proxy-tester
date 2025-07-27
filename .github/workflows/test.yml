@@ -172,7 +172,20 @@ jobs:
           CARGO_NET_RETRY: "10"
           RUST_BACKTRACE: "1"
         with:
-          # Don't create release here - we'll handle it separately for renaming
+          tagName: ${{ needs.check-version.outputs.version }}
+          releaseDraft: true
+          releaseName: "Vital Proxy Tester v${{ needs.check-version.outputs.version }}"
+          releaseBody: |
+            ## Downloads
+
+            **Desktop Applications:**
+            - **macOS Intel**: [Download](https://github.com/${{ github.repository }}/releases/download/${{ needs.check-version.outputs.version }}/Vital.Proxy.Tester_${{ needs.check-version.outputs.version }}_x64.dmg)
+            - **macOS Apple Silicon**: [Download](https://github.com/${{ github.repository }}/releases/download/${{ needs.check-version.outputs.version }}/Vital.Proxy.Tester_${{ needs.check-version.outputs.version }}_aarch64.dmg)  
+            - **Windows**: [Download](https://github.com/${{ github.repository }}/releases/download/${{ needs.check-version.outputs.version }}/Vital.Proxy.Tester_${{ needs.check-version.outputs.version }}_x64-setup.exe)
+            - **Linux AppImage**: [Download](https://github.com/${{ github.repository }}/releases/download/${{ needs.check-version.outputs.version }}/Vital.Proxy.Tester_${{ needs.check-version.outputs.version }}_amd64.AppImage)
+            - **Linux DEB**: [Download](https://github.com/${{ github.repository }}/releases/download/${{ needs.check-version.outputs.version }}/Vital.Proxy.Tester_${{ needs.check-version.outputs.version }}_amd64.deb)
+
+            Built from commit: ${{ github.sha }}
           includeRelease: false
           includeUpdaterJson: true
           args: --target ${{ matrix.target }}
