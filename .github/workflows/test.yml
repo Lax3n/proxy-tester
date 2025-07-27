@@ -1,14 +1,7 @@
-name: "Build and Release for Test Branch"
+name: "Test Branch"
 
 on:
-  # Only manual triggers and tags
   workflow_dispatch:
-    inputs:
-      force_build:
-        description: "Force build even for test branch"
-        required: false
-        default: false
-        type: boolean
 
 jobs:
   # Quick version check job (runs once)
